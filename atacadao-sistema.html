@@ -25,6 +25,7 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--i
 h1,h2,h3,.display{font-family:'Fraunces',Georgia,serif;letter-spacing:-.01em}
 button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
 input,select,textarea{font-family:inherit;font-size:15px}
+button:disabled{opacity:.6;cursor:default}
 .hidden{display:none!important}
 a{color:var(--pine);cursor:pointer}
 
@@ -165,9 +166,9 @@ a{color:var(--pine);cursor:pointer}
     <p class="sub">Acesse com seu usuário de loja ou master.</p>
     <div class="field"><label>E-mail</label><input type="email" id="li_email" placeholder="voce@atacadaopet.com"></div>
     <div class="field"><label>Senha</label><input type="password" id="li_senha" placeholder="Sua senha"></div>
-    <button class="btn-primary" onclick="doLogin()">Entrar</button>
+    <button class="btn-primary" id="li_btn" onclick="doLogin()">Entrar</button>
     <div class="err" id="li_err"></div>
-    <p class="login-hint" id="li_hint"></p>
+    <p class="login-hint">Não tem acesso? Peça ao administrador da rede para criar seu usuário.</p>
   </div>
 </div>
 
@@ -197,56 +198,41 @@ a{color:var(--pine);cursor:pointer}
 <div id="overlay"><div class="modal"><div class="modal-head"><h3 id="mTitle"></h3><button class="x" onclick="closeModal()">×</button></div><div class="modal-body" id="mBody"></div><div class="modal-actions" id="mActions"></div></div></div>
 <div id="toast"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script>
 /* =========================================================
-   ATACADÃO PET — sistema local-first (persistência real)
-   Multi-loja: 3 lojas, 3 usuários por loja + 1 usuário master.
-   Camada de dados isolada (trocável por Supabase depois).
+   ATACADÃO PET — sistema multi-loja (Supabase como banco)
+   3 lojas, 3 usuários por loja + 1 usuário master.
+   Autenticação e dados reais no Supabase (Postgres + Auth).
 ========================================================= */
 
-/* ---------- STORE ---------- */
-const KEY='atacadaopet_db_v1';
-const SESS='atacadaopet_sess';
-let db;
+/* ---------- CONEXÃO SUPABASE ---------- */
+/* Chave pública (protegida pelas regras de acesso no banco — RLS).
+   A chave secreta NUNCA entra aqui; ela só existe na Edge Function. */
+const SUPABASE_URL='https://snfrjnfhiaobyhpmrfda.supabase.co';
+const SUPABASE_PUBLISHABLE_KEY='sb_publishable_Pg2G4yBbWAqIomjywvO4Rw_XzAROwwb';
+const sb=supabase.createClient(SUPABASE_URL,SUPABASE_PUBLISHABLE_KEY);
 
-function seed(){
-  const lojas=[
-    {id:'loja_1',nome:'Loja 1',ativo:true,criado_em:now()},
-    {id:'loja_2',nome:'Loja 2',ativo:true,criado_em:now()},
-    {id:'loja_3',nome:'Loja 3',ativo:true,criado_em:now()}
-  ];
-  return {
-    config:{nome_negocio:'Atacadão Pet', imposto:0, taxa_credito:3.5, taxa_debito:2.0, taxa_pix:0},
-    lojas,
-    usuarios:[{id:'u_master',nome:'Administrador',email:'admin@atacadaopet.app',senha:'admin',perfil:'master',loja_id:null,ativo:true,criado_em:now()}],
-    formas_pagamento:[
-      fp('Dinheiro',0),fp('Pix',0),fp('Cartão de débito',2.0),fp('Cartão de crédito',3.5),fp('Outros',0)
-    ],
-    categorias:[
-      cat('Aluguel','despesa'),cat('Energia','despesa'),cat('Água','despesa'),cat('Salários','despesa'),
-      cat('Compra de mercadorias','despesa'),cat('Marketing','despesa'),cat('Impostos','despesa'),
-      cat('Manutenção','despesa'),cat('Outros','despesa'),cat('Vendas','receita'),cat('Outras receitas','receita')
-    ],
-    produtos:[], mov_estoque:[],
-    fornecedores:[], compras:[], compra_itens:[],
-    vendas:[], venda_itens:[], caixas:[], mov_caixa:[],
-    despesas:[], receitas:[], anotacoes:[]
-  };
-}
-function fp(nome,taxa){return{id:uid(),nome,taxa_percentual:taxa,ativo:true,criado_em:now()}}
-function cat(nome,tipo){return{id:uid(),nome,tipo,ativo:true,criado_em:now()}}
-function load(){try{const r=localStorage.getItem(KEY);if(r)return JSON.parse(r);}catch(e){}const s=seed();localStorage.setItem(KEY,JSON.stringify(s));return s;}
-function save(){localStorage.setItem(KEY,JSON.stringify(db));}
-function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,7)}
-function now(){return new Date().toISOString()}
+/* ---------- CACHE LOCAL (populado a partir do Supabase) ---------- */
+let db={};
 
-/* generic CRUD (não filtra por loja — ver scoped()) */
+/* generic CRUD — leituras são síncronas sobre o cache; escritas vão ao Supabase */
 function all(c){return (db[c]||[]).filter(x=>x.ativo!==false && x.cancelado!==true)}
 function raw(c){return db[c]||[]}
 function get(c,id){return (db[c]||[]).find(x=>x.id===id)}
-function insert(c,obj){obj.id=obj.id||uid();obj.criado_em=now();if(obj.ativo===undefined)obj.ativo=true;db[c].push(obj);save();return obj;}
-function update(c,id,patch){const o=get(c,id);if(o){Object.assign(o,patch);save();}return o;}
-function softDelete(c,id){update(c,id,{ativo:false});}
+async function insert(c,obj){
+  const {data,error}=await sb.from(c).insert(obj).select().single();
+  if(error){toast('Erro ao salvar: '+error.message);throw error;}
+  db[c]=db[c]||[];db[c].push(data);
+  return data;
+}
+async function update(c,id,patch){
+  const {data,error}=await sb.from(c).update(patch).eq('id',id).select().single();
+  if(error){toast('Erro ao atualizar: '+error.message);throw error;}
+  const o=get(c,id);if(o)Object.assign(o,data);
+  return data;
+}
+async function softDelete(c,id){return update(c,id,{ativo:false});}
 
 /* ---------- FORMATTERS ---------- */
 const BRL=v=>new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(+v||0);
@@ -254,7 +240,7 @@ const PCT=v=>(+v||0).toLocaleString('pt-BR',{minimumFractionDigits:1,maximumFrac
 const NUM=v=>(+v||0).toLocaleString('pt-BR',{maximumFractionDigits:3});
 function toLocalDate(iso){if(!iso)return null;return new Date((''+iso).length<=10?iso+'T00:00:00':iso);}
 const dBR=iso=>{const d=toLocalDate(iso);return d?d.toLocaleDateString('pt-BR'):'—';};
-const todayISO=()=>new Date().toISOString().slice(0,10);
+const todayISO=()=>{const d=new Date(),p=n=>(''+n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;};
 function esc(s){return(''+(s??'')).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 
 /* ---------- AUTH + PERMISSIONS ---------- */
@@ -287,18 +273,51 @@ function requireLoja(){
   return id;
 }
 
-function loginHint(){
-  document.getElementById('li_hint').innerHTML=
-    'Primeiro acesso: <b>admin@atacadaopet.app</b> · senha <b>admin</b> (master)<br>Peça ao administrador para criar seu usuário de loja.';
-}
-function doLogin(){
+/* ---------- SESSÃO / LOGIN ---------- */
+async function doLogin(){
   const email=document.getElementById('li_email').value.trim().toLowerCase();
   const senha=document.getElementById('li_senha').value;
-  const u=all('usuarios').find(x=>x.email.toLowerCase()===email&&x.senha===senha);
-  if(!u){document.getElementById('li_err').textContent='E-mail ou senha incorretos.';return;}
-  user=u;localStorage.setItem(SESS,u.id);startApp();
+  const errEl=document.getElementById('li_err');const btn=document.getElementById('li_btn');
+  errEl.textContent='';
+  if(!email||!senha){errEl.textContent='Informe e-mail e senha.';return;}
+  btn.disabled=true;btn.textContent='Entrando...';
+  const {error}=await sb.auth.signInWithPassword({email,password:senha});
+  if(error){errEl.textContent='E-mail ou senha incorretos.';btn.disabled=false;btn.textContent='Entrar';return;}
+  const ok=await afterAuth();
+  if(!ok){btn.disabled=false;btn.textContent='Entrar';}
 }
-function logout(){localStorage.removeItem(SESS);user=null;location.reload();}
+async function afterAuth(){
+  const {data:{user:authUser}}=await sb.auth.getUser();
+  if(!authUser)return false;
+  const {data:profile,error}=await sb.from('usuarios').select('*').eq('id',authUser.id).single();
+  if(error||!profile||profile.ativo===false){
+    document.getElementById('li_err').textContent='Usuário sem acesso liberado. Fale com o administrador.';
+    await sb.auth.signOut();
+    return false;
+  }
+  user=profile;
+  await loadAll();
+  atualizarVencidas();
+  startApp();
+  return true;
+}
+function logout(){sb.auth.signOut();user=null;location.reload();}
+
+/* ---------- CARGA DE DADOS ---------- */
+const TABELAS=['lojas','usuarios','formas_pagamento','categorias','fornecedores','produtos','mov_estoque','compras','compra_itens','vendas','venda_itens','caixas','mov_caixa','despesas','receitas','anotacoes'];
+async function loadAll(){
+  const results=await Promise.all(TABELAS.map(t=>sb.from(t).select('*').order('criado_em',{ascending:true})));
+  const novo={};
+  TABELAS.forEach((t,i)=>{
+    if(results[i].error){console.error(t,results[i].error);novo[t]=[];}
+    else novo[t]=results[i].data;
+  });
+  const {data:cfg}=await sb.from('config').select('*').single();
+  novo.config=cfg||{nome_negocio:'Atacadão Pet',imposto:0,taxa_credito:3.5,taxa_debito:2.0,taxa_pix:0};
+  db=novo;
+}
+
+/* ---------- APP SHELL ---------- */
 function startApp(){
   document.getElementById('login').style.display='none';
   document.getElementById('app').style.display='block';
@@ -438,8 +457,8 @@ function despPeriodo(pr,tipos){return scoped('despesas').filter(d=>inPeriod(d.da
 function caixaAbertoLoja(lojaId){return raw('caixas').filter(c=>c.ativo!==false).find(c=>c.status==='aberto'&&c.loja_id===lojaId)}
 function caixaAberto(){const id=escritaLojaId();return id?caixaAbertoLoja(id):null;}
 function saldoEsperado(cx){
-  const ent=all('mov_caixa').filter(m=>m.caixa_id===cx.id&&m.tipo==='entrada').reduce((s,m)=>s+m.valor,0);
-  const sai=all('mov_caixa').filter(m=>m.caixa_id===cx.id&&m.tipo!=='entrada').reduce((s,m)=>s+m.valor,0);
+  const ent=all('mov_caixa').filter(m=>m.caixa_id===cx.id&&m.tipo==='entrada').reduce((s,m)=>s+(+m.valor||0),0);
+  const sai=all('mov_caixa').filter(m=>m.caixa_id===cx.id&&m.tipo!=='entrada').reduce((s,m)=>s+(+m.valor||0),0);
   return (+cx.saldo_inicial||0)+ent-sai;
 }
 function lojaComparativo(pr){
@@ -559,7 +578,7 @@ RENDER.vendas=()=>{
     ${vendas.length?`<div class="card" style="margin-top:14px;display:flex;justify-content:space-between;align-items:center"><div class="s">Total de hoje · ${vendas.length} lançamentos</div><div class="num" style="font-family:'Fraunces';font-size:23px;color:var(--pine)">${BRL(totalDia)}</div></div>`:''}
     <p class="s" style="margin-top:12px">Toda venda baixa o produto vendido diretamente do estoque da loja.</p>`;
 };
-function novaVenda(){
+async function novaVenda(){
   const lojaId=requireLoja();if(!lojaId)return;
   const produtos=raw('produtos').filter(p=>p.ativo!==false&&p.loja_id===lojaId);
   if(!produtos.length){toast('Cadastre um produto antes de vender.');go('estoque');return;}
@@ -571,13 +590,13 @@ function novaVenda(){
     {k:'forma_pagamento_id',label:'Forma de pagamento',type:'select',options:fps.map(f=>({v:f.id,l:f.nome})),required:true,full:true},
     {k:'observacao',label:'Observação',type:'text',full:true}
   ];
-  crudForm('Nova venda',fields,{},d=>{
+  crudForm('Nova venda',fields,{},async d=>{
     const p=get('produtos',d.produto_id);const total=p.preco_venda*d.quantidade-(+d.desconto||0);
-    const v=insert('vendas',{loja_id:lojaId,tipo:'individual',data:todayISO(),forma_pagamento_id:d.forma_pagamento_id,desconto:+d.desconto||0,valor_total:total,observacao:d.observacao,usuario_id:user.id,status:'registrada'});
-    insert('venda_itens',{venda_id:v.id,loja_id:lojaId,produto_id:p.id,nome:p.nome,quantidade:+d.quantidade,valor_unitario:p.preco_venda,valor_total:total});
-    update('produtos',p.id,{quantidade_atual:(+p.quantidade_atual||0)-(+d.quantidade)});
-    insert('mov_estoque',{loja_id:lojaId,produto_id:p.id,tipo:'saida_venda',quantidade:-d.quantidade,referencia_id:v.id,usuario_id:user.id});
-    const cx=caixaAbertoLoja(lojaId);if(cx&&(get('formas_pagamento',d.forma_pagamento_id)||{}).nome==='Dinheiro')insert('mov_caixa',{caixa_id:cx.id,loja_id:lojaId,tipo:'entrada',valor:total,descricao:'Venda '+p.nome});
+    const v=await insert('vendas',{loja_id:lojaId,tipo:'individual',data:todayISO(),forma_pagamento_id:d.forma_pagamento_id,desconto:+d.desconto||0,valor_total:total,observacao:d.observacao,usuario_id:user.id,status:'registrada'});
+    await insert('venda_itens',{venda_id:v.id,loja_id:lojaId,produto_id:p.id,nome:p.nome,quantidade:+d.quantidade,valor_unitario:p.preco_venda,valor_total:total});
+    await update('produtos',p.id,{quantidade_atual:(+p.quantidade_atual||0)-(+d.quantidade)});
+    await insert('mov_estoque',{loja_id:lojaId,produto_id:p.id,tipo:'saida_venda',quantidade:-d.quantidade,referencia_id:v.id,usuario_id:user.id});
+    const cx=caixaAbertoLoja(lojaId);if(cx&&(get('formas_pagamento',d.forma_pagamento_id)||{}).nome==='Dinheiro')await insert('mov_caixa',{caixa_id:cx.id,loja_id:lojaId,tipo:'entrada',valor:total,descricao:'Venda '+p.nome});
     toast('Venda registrada e estoque atualizado.');go('vendas');
   });
 }
@@ -585,14 +604,14 @@ function resumoPeriodo(){
   const lojaId=requireLoja();if(!lojaId)return;
   const fps=all('formas_pagamento');
   const fields=[{k:'data',label:'Data',type:'date',value:todayISO(),required:true},...fps.map(f=>({k:'v_'+f.id,label:f.nome+' (R$)',type:'number',value:0}))];
-  crudForm('Resumo do período',fields,{},d=>{
+  crudForm('Resumo do período',fields,{},async d=>{
     let total=0;fps.forEach(f=>total+=(+d['v_'+f.id]||0));
     if(total<=0){toast('Informe ao menos um valor.');return;}
-    insert('vendas',{loja_id:lojaId,tipo:'resumo',data:d.data,valor_total:total,usuario_id:user.id,status:'registrada'});
+    await insert('vendas',{loja_id:lojaId,tipo:'resumo',data:d.data,valor_total:total,usuario_id:user.id,status:'registrada'});
     toast('Resumo lançado: '+BRL(total));go('vendas');
   });
 }
-function cancelarVenda(id){confirmAction('Cancelar esta venda? O registro é mantido para histórico, mas sai dos totais.',()=>{update('vendas',id,{status:'cancelada',cancelado:true});toast('Venda cancelada.');go('vendas');},true);}
+function cancelarVenda(id){confirmAction('Cancelar esta venda? O registro é mantido para histórico, mas sai dos totais.',async()=>{await update('vendas',id,{status:'cancelada',cancelado:true});toast('Venda cancelada.');go('vendas');},true);}
 
 /* -------- CAIXA -------- */
 RENDER.caixa=()=>{
@@ -606,8 +625,8 @@ RENDER.caixa=()=>{
   const cx=caixaAberto();
   let corpo;
   if(cx){
-    const ent=all('mov_caixa').filter(m=>m.caixa_id===cx.id&&m.tipo==='entrada').reduce((s,m)=>s+m.valor,0);
-    const sai=all('mov_caixa').filter(m=>m.caixa_id===cx.id&&m.tipo!=='entrada').reduce((s,m)=>s+m.valor,0);
+    const ent=all('mov_caixa').filter(m=>m.caixa_id===cx.id&&m.tipo==='entrada').reduce((s,m)=>s+(+m.valor||0),0);
+    const sai=all('mov_caixa').filter(m=>m.caixa_id===cx.id&&m.tipo!=='entrada').reduce((s,m)=>s+(+m.valor||0),0);
     corpo=`<div class="grid" style="grid-template-columns:1fr 1fr;gap:14px">
       <div class="card"><div class="subhead">Caixa aberto</div>
         <div class="res-row"><span>Saldo inicial</span><b class="num">${BRL(cx.saldo_inicial)}</b></div>
@@ -628,14 +647,13 @@ RENDER.caixa=()=>{
     <div class="section-title">Últimos fechamentos</div>
     <div class="list">${fechados.length?fechados.map(c=>`<div class="row" style="grid-template-columns:110px 1fr auto"><div class="s num">${dBR(c.data_fechamento||c.criado_em)}</div><div class="t">${c.diferenca===0?'Sem divergência':`Diferença de ${BRL(Math.abs(c.diferenca))} ${c.diferenca<0?'a menos':'a mais'}`}</div><div class="pill-s ${c.status==='com_divergencia'?'s-pend':'s-ok'}">${c.status==='com_divergencia'?'Divergência':'OK'}</div></div>`).join(''):emptyState('Nenhum fechamento ainda.')}</div>`;
 };
-function abrirCaixa(){const lojaId=requireLoja();if(!lojaId)return;crudForm('Abrir caixa',[{k:'saldo_inicial',label:'Saldo inicial (R$)',type:'number',value:0,required:true}],{},d=>{insert('caixas',{loja_id:lojaId,tipo:'diario',data_abertura:todayISO(),saldo_inicial:+d.saldo_inicial,status:'aberto',usuario_abertura_id:user.id});toast('Caixa aberto.');go('caixa');});}
-function movCaixa(){const lojaId=requireLoja();if(!lojaId)return;const cx=caixaAbertoLoja(lojaId);crudForm('Retirada / saída de caixa',[{k:'tipo',label:'Tipo',type:'select',options:[{v:'retirada',l:'Retirada'},{v:'saida',l:'Saída / despesa'}],required:true},{k:'valor',label:'Valor (R$)',type:'number',required:true},{k:'descricao',label:'Descrição',type:'text',full:true}],{},d=>{insert('mov_caixa',{caixa_id:cx.id,loja_id:lojaId,tipo:d.tipo,valor:+d.valor,descricao:d.descricao});if(d.tipo==='retirada')insert('despesas',{loja_id:lojaId,descricao:d.descricao||'Retirada de caixa',tipo:'retirada',valor:+d.valor,data_competencia:todayISO(),status:'pago',usuario_id:user.id});toast('Movimentação registrada.');go('caixa');});}
-function fecharCaixa(id){const cx=get('caixas',id);crudForm('Fechar caixa',[{k:'valor_informado',label:'Valor contado na gaveta (R$)',type:'number',required:true,help:`Esperado: ${BRL(saldoEsperado(cx))}`}],{},d=>{const esp=saldoEsperado(cx);const dif=(+d.valor_informado)-esp;update('caixas',id,{status:Math.abs(dif)>0.001?'com_divergencia':'fechado',valor_esperado:esp,valor_informado:+d.valor_informado,diferenca:dif,data_fechamento:todayISO(),usuario_fechamento_id:user.id});toast(Math.abs(dif)<0.001?'Caixa fechado sem divergência.':`Fechado com diferença de ${BRL(dif)}.`);go('caixa');});}
+function abrirCaixa(){const lojaId=requireLoja();if(!lojaId)return;crudForm('Abrir caixa',[{k:'saldo_inicial',label:'Saldo inicial (R$)',type:'number',value:0,required:true}],{},async d=>{await insert('caixas',{loja_id:lojaId,tipo:'diario',data_abertura:todayISO(),saldo_inicial:+d.saldo_inicial,status:'aberto',usuario_abertura_id:user.id});toast('Caixa aberto.');go('caixa');});}
+function movCaixa(){const lojaId=requireLoja();if(!lojaId)return;const cx=caixaAbertoLoja(lojaId);crudForm('Retirada / saída de caixa',[{k:'tipo',label:'Tipo',type:'select',options:[{v:'retirada',l:'Retirada'},{v:'saida',l:'Saída / despesa'}],required:true},{k:'valor',label:'Valor (R$)',type:'number',required:true},{k:'descricao',label:'Descrição',type:'text',full:true}],{},async d=>{await insert('mov_caixa',{caixa_id:cx.id,loja_id:lojaId,tipo:d.tipo,valor:+d.valor,descricao:d.descricao});if(d.tipo==='retirada')await insert('despesas',{loja_id:lojaId,descricao:d.descricao||'Retirada de caixa',tipo:'retirada',valor:+d.valor,data_competencia:todayISO(),status:'pago',usuario_id:user.id});toast('Movimentação registrada.');go('caixa');});}
+function fecharCaixa(id){const cx=get('caixas',id);crudForm('Fechar caixa',[{k:'valor_informado',label:'Valor contado na gaveta (R$)',type:'number',required:true,help:`Esperado: ${BRL(saldoEsperado(cx))}`}],{},async d=>{const esp=saldoEsperado(cx);const dif=(+d.valor_informado)-esp;await update('caixas',id,{status:Math.abs(dif)>0.001?'com_divergencia':'fechado',valor_esperado:esp,valor_informado:+d.valor_informado,diferenca:dif,data_fechamento:todayISO(),usuario_fechamento_id:user.id});toast(Math.abs(dif)<0.001?'Caixa fechado sem divergência.':`Fechado com diferença de ${BRL(dif)}.`);go('caixa');});}
 
 /* -------- FINANCEIRO -------- */
 RENDER.financeiro=()=>{
   const w=canWrite('financeiro');
-  atualizarVencidas();
   const singleLoja=!isMaster()||lojaFiltro!=='todas';
   const desp=scoped('despesas').filter(d=>['pendente','vencido'].includes(d.status)).sort((a,b)=>(a.data_vencimento||'')<(b.data_vencimento||'')?-1:1);
   const vencidas=scoped('despesas').filter(d=>d.status==='vencido').reduce((s,d)=>s+(+d.valor||0),0);
@@ -665,12 +683,17 @@ function despFields(){const cats=all('categorias').filter(c=>c.tipo==='despesa')
   {k:'data_vencimento',label:'Vencimento',type:'date',value:todayISO()},
   {k:'recorrencia',label:'Recorrência',type:'select',options:[{v:'nenhuma',l:'Única'},{v:'mensal',l:'Mensal'}]}
 ];}
-function novaDespesa(){const lojaId=requireLoja();if(!lojaId)return;crudForm('Nova despesa',despFields(),{},d=>{insert('despesas',{...d,loja_id:lojaId,status:'pendente',usuario_id:user.id});toast('Despesa lançada.');go('financeiro');});}
-function editarDespesa(id){crudForm('Editar despesa',despFields(),get('despesas',id),d=>{update('despesas',id,d);toast('Despesa atualizada.');go('financeiro');});}
-function pagarDespesa(id){confirmAction('Marcar esta despesa como paga?',()=>{update('despesas',id,{status:'pago',data_pagamento:todayISO()});const d=get('despesas',id);const cx=caixaAbertoLoja(d.loja_id);if(cx)insert('mov_caixa',{caixa_id:cx.id,loja_id:d.loja_id,tipo:'despesa',valor:+d.valor,descricao:d.descricao});toast('Despesa paga.');go('financeiro');});}
-function excluirDespesa(id){confirmAction('Cancelar esta despesa? Ela é inativada, não apagada.',()=>{update('despesas',id,{status:'cancelado',ativo:false});toast('Despesa cancelada.');go('financeiro');},true);}
-function novaReceita(){const lojaId=requireLoja();if(!lojaId)return;const cats=all('categorias').filter(c=>c.tipo==='receita');crudForm('Nova receita',[{k:'descricao',label:'Descrição',type:'text',required:true,full:true},{k:'categoria_id',label:'Categoria',type:'select',options:cats.map(c=>({v:c.id,l:c.nome}))},{k:'valor',label:'Valor (R$)',type:'number',required:true},{k:'data_competencia',label:'Data',type:'date',value:todayISO()}],{},d=>{insert('receitas',{...d,loja_id:lojaId,status:'recebido',usuario_id:user.id});toast('Receita lançada.');go('financeiro');});}
-function atualizarVencidas(){const t=todayISO();all('despesas').forEach(d=>{if(d.status==='pendente'&&d.data_vencimento&&d.data_vencimento<t)update('despesas',d.id,{status:'vencido'});});}
+function novaDespesa(){const lojaId=requireLoja();if(!lojaId)return;crudForm('Nova despesa',despFields(),{},async d=>{await insert('despesas',{...d,loja_id:lojaId,status:'pendente',usuario_id:user.id});toast('Despesa lançada.');go('financeiro');});}
+function editarDespesa(id){crudForm('Editar despesa',despFields(),get('despesas',id),async d=>{await update('despesas',id,d);toast('Despesa atualizada.');go('financeiro');});}
+function pagarDespesa(id){confirmAction('Marcar esta despesa como paga?',async()=>{await update('despesas',id,{status:'pago',data_pagamento:todayISO()});const d=get('despesas',id);const cx=caixaAbertoLoja(d.loja_id);if(cx)await insert('mov_caixa',{caixa_id:cx.id,loja_id:d.loja_id,tipo:'despesa',valor:+d.valor,descricao:d.descricao});toast('Despesa paga.');go('financeiro');});}
+function excluirDespesa(id){confirmAction('Cancelar esta despesa? Ela é inativada, não apagada.',async()=>{await update('despesas',id,{status:'cancelado',ativo:false});toast('Despesa cancelada.');go('financeiro');},true);}
+function novaReceita(){const lojaId=requireLoja();if(!lojaId)return;const cats=all('categorias').filter(c=>c.tipo==='receita');crudForm('Nova receita',[{k:'descricao',label:'Descrição',type:'text',required:true,full:true},{k:'categoria_id',label:'Categoria',type:'select',options:cats.map(c=>({v:c.id,l:c.nome}))},{k:'valor',label:'Valor (R$)',type:'number',required:true},{k:'data_competencia',label:'Data',type:'date',value:todayISO()}],{},async d=>{await insert('receitas',{...d,loja_id:lojaId,status:'recebido',usuario_id:user.id});toast('Receita lançada.');go('financeiro');});}
+async function atualizarVencidas(){
+  const t=todayISO();
+  for(const d of all('despesas')){
+    if(d.status==='pendente'&&d.data_vencimento&&d.data_vencimento<t){await update('despesas',d.id,{status:'vencido'});}
+  }
+}
 
 /* -------- ESTOQUE / PRODUTOS -------- */
 const CAT_PROD=[['racao','Ração'],['petisco','Petiscos'],['higiene','Higiene e limpeza'],['acessorio','Acessórios'],['farmacia','Farmácia e saúde'],['brinquedo','Brinquedos'],['outro','Outro']];
@@ -693,10 +716,10 @@ RENDER.estoque=()=>{
     <p class="s" style="margin-top:12px">O custo e o preço de venda aqui definem a margem de cada produto e alimentam as vendas.</p>`;
 };
 function prodFields(){return[{k:'nome',label:'Nome',type:'text',required:true,full:true},{k:'categoria',label:'Categoria',type:'select',options:CAT_PROD.map(([v,l])=>({v,l})),required:true},{k:'unidade',label:'Unidade (un, kg, L...)',type:'text',value:'un'},{k:'quantidade_atual',label:'Qtd atual',type:'number',step:'0.001'},{k:'custo_unitario',label:'Custo unitário (R$)',type:'number',required:true},{k:'preco_venda',label:'Preço de venda (R$)',type:'number',required:true}];}
-function novoProduto(){const lojaId=requireLoja();if(!lojaId)return;crudForm('Novo produto',prodFields(),{},d=>{insert('produtos',{...d,loja_id:lojaId});toast('Produto cadastrado.');go('estoque');});}
-function editarProduto(id){crudForm('Editar produto',prodFields(),get('produtos',id),d=>{update('produtos',id,d);toast('Produto atualizado.');go('estoque');});}
-function ajusteEstoque(id){const p=get('produtos',id);crudForm('Ajuste de estoque',[{k:'quantidade',label:'Nova quantidade',type:'number',step:'0.001',value:p.quantidade_atual,required:true},{k:'motivo',label:'Motivo',type:'text',full:true}],{},d=>{const diff=(+d.quantidade)-(+p.quantidade_atual);update('produtos',id,{quantidade_atual:+d.quantidade});insert('mov_estoque',{loja_id:p.loja_id,produto_id:id,tipo:'ajuste',quantidade:diff,observacao:d.motivo,usuario_id:user.id});toast('Estoque ajustado.');go('estoque');});}
-function excluirProduto(id){confirmAction('Inativar este produto?',()=>{softDelete('produtos',id);toast('Produto inativado.');go('estoque');},true);}
+function novoProduto(){const lojaId=requireLoja();if(!lojaId)return;crudForm('Novo produto',prodFields(),{},async d=>{await insert('produtos',{...d,loja_id:lojaId});toast('Produto cadastrado.');go('estoque');});}
+function editarProduto(id){crudForm('Editar produto',prodFields(),get('produtos',id),async d=>{await update('produtos',id,d);toast('Produto atualizado.');go('estoque');});}
+function ajusteEstoque(id){const p=get('produtos',id);crudForm('Ajuste de estoque',[{k:'quantidade',label:'Nova quantidade',type:'number',step:'0.001',value:p.quantidade_atual,required:true},{k:'motivo',label:'Motivo',type:'text',full:true}],{},async d=>{const diff=(+d.quantidade)-(+p.quantidade_atual);await update('produtos',id,{quantidade_atual:+d.quantidade});await insert('mov_estoque',{loja_id:p.loja_id,produto_id:id,tipo:'ajuste',quantidade:diff,observacao:d.motivo,usuario_id:user.id});toast('Estoque ajustado.');go('estoque');});}
+function excluirProduto(id){confirmAction('Inativar este produto?',async()=>{await softDelete('produtos',id);toast('Produto inativado.');go('estoque');},true);}
 
 /* -------- FORNECEDORES (compartilhado entre lojas) -------- */
 RENDER.fornecedores=()=>{
@@ -706,9 +729,9 @@ RENDER.fornecedores=()=>{
     <p class="s" style="margin-top:12px">Fornecedores são compartilhados entre todas as lojas da rede.</p>`;
 };
 function fornFields(){return[{k:'nome',label:'Nome / fantasia',type:'text',required:true,full:true},{k:'razao_social',label:'Razão social',type:'text',full:true},{k:'documento',label:'CPF / CNPJ',type:'text'},{k:'whatsapp',label:'WhatsApp',type:'text'},{k:'nome_vendedor',label:'Vendedor',type:'text'},{k:'prazo_pagamento',label:'Prazo de pagamento',type:'text'},{k:'produtos',label:'Produtos fornecidos',type:'textarea',full:true}];}
-function novoForn(){crudForm('Novo fornecedor',fornFields(),{},d=>{insert('fornecedores',d);toast('Fornecedor cadastrado.');go('fornecedores');});}
-function editarForn(id){crudForm('Editar fornecedor',fornFields(),get('fornecedores',id),d=>{update('fornecedores',id,d);toast('Atualizado.');go('fornecedores');});}
-function excluirForn(id){confirmAction('Inativar fornecedor?',()=>{softDelete('fornecedores',id);toast('Inativado.');go('fornecedores');},true);}
+function novoForn(){crudForm('Novo fornecedor',fornFields(),{},async d=>{await insert('fornecedores',d);toast('Fornecedor cadastrado.');go('fornecedores');});}
+function editarForn(id){crudForm('Editar fornecedor',fornFields(),get('fornecedores',id),async d=>{await update('fornecedores',id,d);toast('Atualizado.');go('fornecedores');});}
+function excluirForn(id){confirmAction('Inativar fornecedor?',async()=>{await softDelete('fornecedores',id);toast('Inativado.');go('fornecedores');},true);}
 
 /* -------- COMPRAS -------- */
 RENDER.compras=()=>{
@@ -732,20 +755,26 @@ function novaCompra(){
     {k:'custo_unitario',label:'Custo unitário (R$)',type:'number',required:true},
     {k:'data_pedido',label:'Data do pedido',type:'date',value:todayISO()},
     {k:'previsao_entrega',label:'Previsão de entrega',type:'date'}
-  ],{},d=>{
+  ],{},async d=>{
     const total=d.quantidade*d.custo_unitario;
-    const c=insert('compras',{loja_id:lojaId,fornecedor_id:d.fornecedor_id,data_pedido:d.data_pedido,previsao_entrega:d.previsao_entrega,valor_combinado:total,status:'solicitada',itens_qtd:1,usuario_id:user.id});
-    insert('compra_itens',{compra_id:c.id,loja_id:lojaId,produto_id:d.produto_id,quantidade_pedida:+d.quantidade,custo_unitario_combinado:+d.custo_unitario});
+    const c=await insert('compras',{loja_id:lojaId,fornecedor_id:d.fornecedor_id,data_pedido:d.data_pedido,previsao_entrega:d.previsao_entrega,valor_combinado:total,status:'solicitada',itens_qtd:1,usuario_id:user.id});
+    await insert('compra_itens',{compra_id:c.id,loja_id:lojaId,produto_id:d.produto_id,quantidade_pedida:+d.quantidade,custo_unitario_combinado:+d.custo_unitario});
     toast('Pedido criado.');go('compras');
   });
 }
 function receberCompra(id){
-  confirmAction('Confirmar recebimento? Isso atualiza estoque, custo do produto e gera a despesa.',()=>{
+  confirmAction('Confirmar recebimento? Isso atualiza estoque, custo do produto e gera a despesa.',async()=>{
     const c=get('compras',id);const itens=all('compra_itens').filter(x=>x.compra_id===id);
-    itens.forEach(it=>{const p=get('produtos',it.produto_id);if(p){update('produtos',p.id,{quantidade_atual:(+p.quantidade_atual||0)+(+it.quantidade_pedida),custo_unitario:+it.custo_unitario_combinado,data_ultima_compra:todayISO()});insert('mov_estoque',{loja_id:c.loja_id,produto_id:p.id,tipo:'entrada_compra',quantidade:+it.quantidade_pedida,custo_unitario_no_momento:+it.custo_unitario_combinado,referencia_id:id,usuario_id:user.id});}});
+    for(const it of itens){
+      const p=get('produtos',it.produto_id);
+      if(p){
+        await update('produtos',p.id,{quantidade_atual:(+p.quantidade_atual||0)+(+it.quantidade_pedida),custo_unitario:+it.custo_unitario_combinado,data_ultima_compra:todayISO()});
+        await insert('mov_estoque',{loja_id:c.loja_id,produto_id:p.id,tipo:'entrada_compra',quantidade:+it.quantidade_pedida,custo_unitario_no_momento:+it.custo_unitario_combinado,referencia_id:id,usuario_id:user.id});
+      }
+    }
     const forn=get('fornecedores',c.fornecedor_id)||{};
-    insert('despesas',{loja_id:c.loja_id,descricao:'Compra — '+(forn.nome||'fornecedor'),tipo:'compra_estoque',valor:+c.valor_combinado,data_competencia:todayISO(),data_vencimento:todayISO(),status:'pendente',compra_id:id,usuario_id:user.id});
-    update('compras',id,{status:'entregue',data_recebimento:todayISO()});
+    await insert('despesas',{loja_id:c.loja_id,descricao:'Compra — '+(forn.nome||'fornecedor'),tipo:'compra_estoque',valor:+c.valor_combinado,data_competencia:todayISO(),data_vencimento:todayISO(),status:'pendente',compra_id:id,usuario_id:user.id});
+    await update('compras',id,{status:'entregue',data_recebimento:todayISO()});
     toast('Recebido: estoque, custo e despesa atualizados.');go('compras');
   });
 }
@@ -790,8 +819,8 @@ RENDER.anotacoes=()=>{
   const rows=as.length?as.map(a=>`<div class="row" style="grid-template-columns:${cols}"><div><div class="t">${esc(a.titulo)}</div><div class="s">${esc(a.descricao||'')} · ${esc(a.categoria||'')}</div></div>${singleLoja?'':`<div class="s">${esc((get('lojas',a.loja_id)||{}).nome||'—')}</div>`}<div class="s">${esc(a.prioridade||'')}</div><div class="pill-s ${a.prioridade==='Alta'?'s-venc':a.prioridade==='Média'?'s-pend':'s-ok'}">${esc(a.prioridade||'—')}</div>${w?`<div class="actions"><button class="del" onclick="excluirAnot('${a.id}')">✕</button></div>`:''}</div>`).join(''):emptyState('Nenhuma anotação.',w?`<button class="btn-add" onclick="novaAnot()">＋ Nova anotação</button>`:'');
   return `${w?`<div class="toolbar"><button class="btn-add" onclick="novaAnot()">＋ Nova anotação</button></div>`:''}<div class="list">${rows}</div>`;
 };
-function novaAnot(){const lojaId=requireLoja();if(!lojaId)return;crudForm('Nova anotação',[{k:'titulo',label:'Título',type:'text',required:true,full:true},{k:'descricao',label:'Descrição',type:'textarea',full:true},{k:'categoria',label:'Categoria',type:'select',options:['Compras','Financeiro','Estoque','Fornecedor','Pendência','Outros'].map(x=>({v:x,l:x}))},{k:'prioridade',label:'Prioridade',type:'select',options:['Baixa','Média','Alta'].map(x=>({v:x,l:x}))}],{},d=>{insert('anotacoes',{...d,loja_id:lojaId,status:'aberta',usuario_id:user.id});toast('Anotação salva.');go('anotacoes');});}
-function excluirAnot(id){softDelete('anotacoes',id);toast('Removida.');go('anotacoes');}
+function novaAnot(){const lojaId=requireLoja();if(!lojaId)return;crudForm('Nova anotação',[{k:'titulo',label:'Título',type:'text',required:true,full:true},{k:'descricao',label:'Descrição',type:'textarea',full:true},{k:'categoria',label:'Categoria',type:'select',options:['Compras','Financeiro','Estoque','Fornecedor','Pendência','Outros'].map(x=>({v:x,l:x}))},{k:'prioridade',label:'Prioridade',type:'select',options:['Baixa','Média','Alta'].map(x=>({v:x,l:x}))}],{},async d=>{await insert('anotacoes',{...d,loja_id:lojaId,status:'aberta',usuario_id:user.id});toast('Anotação salva.');go('anotacoes');});}
+function excluirAnot(id){softDelete('anotacoes',id).then(()=>{toast('Removida.');go('anotacoes');});}
 
 /* -------- USUÁRIOS (visível só ao master) -------- */
 RENDER.usuarios=()=>{
@@ -799,40 +828,52 @@ RENDER.usuarios=()=>{
   const counts=lojas.map(l=>({l,n:us.filter(u=>u.loja_id===l.id).length}));
   const rows=us.map(u=>{
     const lojaNome=u.perfil==='master'?'Todas (master)':(get('lojas',u.loja_id)||{}).nome||'—';
-    return `<div class="row" style="grid-template-columns:1fr 1fr 150px 130px 130px"><div class="t">${esc(u.nome)}</div><div class="s">${esc(u.email)}</div><div><span class="pill-s s-ok">${ROLES[u.perfil]}</span></div><div class="s">${esc(lojaNome)}</div><div class="actions"><button onclick="editarUser('${u.id}')">Editar</button>${u.id!=='u_master'?`<button class="del" onclick="excluirUser('${u.id}')">✕</button>`:''}</div></div>`;
+    return `<div class="row" style="grid-template-columns:1fr 1fr 150px 130px 130px"><div class="t">${esc(u.nome)}</div><div class="s">${esc(u.email)}</div><div><span class="pill-s s-ok">${ROLES[u.perfil]}</span></div><div class="s">${esc(lojaNome)}</div><div class="actions"><button onclick="editarUser('${u.id}')">Editar</button>${u.id!==user.id?`<button class="del" onclick="excluirUser('${u.id}')">✕</button>`:''}</div></div>`;
   }).join('');
   return `<div class="grid" style="grid-template-columns:repeat(${counts.length||1},1fr);margin-bottom:16px">
     ${counts.map(c=>`<div class="card" style="text-align:center;padding:14px"><div class="s">${esc(c.l.nome)}</div><div class="t" style="font-size:20px;margin-top:4px">${c.n}<span class="s"> / 3</span>${c.n>3?' ⚠':''}</div></div>`).join('')}
   </div>
   <div class="toolbar"><button class="btn-add" onclick="novoUser()">＋ Novo usuário</button></div>
     <div class="list"><div class="list-head" style="grid-template-columns:1fr 1fr 150px 130px 130px"><span>Nome</span><span>E-mail</span><span>Perfil</span><span>Loja</span><span></span></div>${rows}</div>
-    <p class="s" style="margin-top:12px">Cada loja opera com até 3 usuários, com acesso a estoque, vendas, caixa e financeiro da própria loja. O master vê e gerencia todas as lojas.</p>`;
+    <p class="s" style="margin-top:12px">Cada loja opera com até 3 usuários. E-mail e senha são definidos na criação e não podem ser trocados nesta tela (peça pra recriar o usuário se precisar mudar o e-mail de login).</p>`;
 };
-function userFields(){
+function userFieldsCreate(){
   const lojas=all('lojas');
   return[
     {k:'nome',label:'Nome',type:'text',required:true,full:true},
     {k:'email',label:'E-mail',type:'email',required:true,full:true},
-    {k:'senha',label:'Senha',type:'text',required:true},
+    {k:'senha',label:'Senha (mín. 6 caracteres)',type:'password',required:true},
     {k:'perfil',label:'Perfil',type:'select',options:[{v:'loja',l:'Operador de loja'},{v:'master',l:'Administrador (master)'}],required:true},
     {k:'loja_id',label:'Loja (se operador)',type:'select',options:[{v:'',l:'— selecione —'},...lojas.map(l=>({v:l.id,l:l.nome}))]}
   ];
 }
-function validarUserLoja(d){
-  if(d.perfil==='loja'&&!d.loja_id){toast('Selecione a loja deste usuário.');return false;}
-  if(d.perfil==='master')d.loja_id=null;
-  return true;
+function userFieldsEdit(){
+  const lojas=all('lojas');
+  return[
+    {k:'nome',label:'Nome',type:'text',required:true,full:true},
+    {k:'perfil',label:'Perfil',type:'select',options:[{v:'loja',l:'Operador de loja'},{v:'master',l:'Administrador (master)'}],required:true},
+    {k:'loja_id',label:'Loja (se operador)',type:'select',options:[{v:'',l:'— selecione —'},...lojas.map(l=>({v:l.id,l:l.nome}))]}
+  ];
 }
-function novoUser(){crudForm('Novo usuário',userFields(),{},d=>{
-  if(!validarUserLoja(d))return;
-  if(all('usuarios').some(u=>u.email.toLowerCase()===d.email.toLowerCase())){toast('E-mail já cadastrado.');return;}
-  const lojaUsers=d.perfil==='loja'?all('usuarios').filter(u=>u.loja_id===d.loja_id).length:0;
-  insert('usuarios',d);
-  toast(lojaUsers>=3?'Usuário criado. Atenção: esta loja já tem mais de 3 usuários.':'Usuário criado.');
-  go('usuarios');
-});}
-function editarUser(id){crudForm('Editar usuário',userFields(),get('usuarios',id),d=>{if(!validarUserLoja(d))return;update('usuarios',id,d);toast('Usuário atualizado.');go('usuarios');});}
-function excluirUser(id){confirmAction('Inativar este usuário?',()=>{softDelete('usuarios',id);toast('Usuário inativado.');go('usuarios');},true);}
+function novoUser(){
+  crudForm('Novo usuário',userFieldsCreate(),{},async d=>{
+    if(d.perfil==='loja'&&!d.loja_id){toast('Selecione a loja deste usuário.');return;}
+    const {data,error}=await sb.functions.invoke('clever-responder',{body:{
+      nome:d.nome,email:d.email,senha:d.senha,perfil:d.perfil,loja_id:d.perfil==='loja'?d.loja_id:null
+    }});
+    if(error||data?.error){toast('Erro: '+(data?.error||error.message));return;}
+    db.usuarios.push(data.profile);
+    toast('Usuário criado.');go('usuarios');
+  });
+}
+function editarUser(id){
+  crudForm('Editar usuário',userFieldsEdit(),get('usuarios',id),async d=>{
+    if(d.perfil==='loja'&&!d.loja_id){toast('Selecione a loja deste usuário.');return;}
+    if(d.perfil==='master')d.loja_id=null;
+    await update('usuarios',id,d);toast('Usuário atualizado.');go('usuarios');
+  });
+}
+function excluirUser(id){confirmAction('Inativar este usuário? Ele perde o acesso imediatamente.',async()=>{await softDelete('usuarios',id);toast('Usuário inativado.');go('usuarios');},true);}
 
 /* -------- CONFIGURAÇÕES -------- */
 RENDER.config=()=>{
@@ -858,19 +899,29 @@ RENDER.config=()=>{
     <button class="btn-ghost" style="margin-top:12px" onclick="novaCategoria()">＋ Categoria</button>
   </div>
   <div class="card"><div class="subhead">Dados</div>
-    <div class="s" style="margin-bottom:12px">Os dados ficam salvos neste dispositivo. Faça backup ou limpe abaixo.</div>
+    <div class="s" style="margin-bottom:12px">Os dados ficam salvos no banco compartilhado da rede (Supabase). Você pode baixar uma cópia local a qualquer momento.</div>
     <button class="btn-ghost" onclick="exportBackup()">Baixar backup (JSON)</button>
     <button class="btn-ghost" style="margin-left:8px" onclick="loadDemo()">Carregar dados de exemplo</button>
-    <button class="btn-ghost del" style="margin-left:8px;color:var(--alert)" onclick="resetTudo()">Apagar tudo</button>
   </div>`;
 };
-function editarLojaNome(id){crudForm('Editar loja',[{k:'nome',label:'Nome da loja',type:'text',required:true,full:true}],get('lojas',id),d=>{update('lojas',id,d);toast('Loja atualizada.');renderLojaSwitch();go('config');});}
-function salvarConfig(){db.config.nome_negocio=document.getElementById('cfg_nome').value;db.config.imposto=+document.getElementById('cfg_imp').value||0;db.config.taxa_credito=+document.getElementById('cfg_cred').value||0;db.config.taxa_debito=+document.getElementById('cfg_deb').value||0;save();document.getElementById('sb_neg').textContent=db.config.nome_negocio;toast('Configurações salvas.');}
-function novaForma(){crudForm('Forma de pagamento',[{k:'nome',label:'Nome',type:'text',required:true,full:true},{k:'taxa_percentual',label:'Taxa (%)',type:'number'}],{},d=>{insert('formas_pagamento',d);toast('Adicionada.');go('config');});}
-function editForma(id){crudForm('Editar forma',[{k:'nome',label:'Nome',type:'text',required:true,full:true},{k:'taxa_percentual',label:'Taxa (%)',type:'number'}],get('formas_pagamento',id),d=>{update('formas_pagamento',id,d);toast('Atualizada.');go('config');});}
-function novaCategoria(){crudForm('Nova categoria',[{k:'nome',label:'Nome',type:'text',required:true,full:true},{k:'tipo',label:'Tipo',type:'select',options:[{v:'despesa',l:'Despesa'},{v:'receita',l:'Receita'}],required:true}],{},d=>{insert('categorias',d);toast('Categoria criada.');go('config');});}
+function editarLojaNome(id){crudForm('Editar loja',[{k:'nome',label:'Nome da loja',type:'text',required:true,full:true}],get('lojas',id),async d=>{await update('lojas',id,d);toast('Loja atualizada.');renderLojaSwitch();go('config');});}
+async function salvarConfig(){
+  const patch={
+    nome_negocio:document.getElementById('cfg_nome').value,
+    imposto:+document.getElementById('cfg_imp').value||0,
+    taxa_credito:+document.getElementById('cfg_cred').value||0,
+    taxa_debito:+document.getElementById('cfg_deb').value||0
+  };
+  const {data,error}=await sb.from('config').update(patch).eq('id',true).select().single();
+  if(error){toast('Erro: '+error.message);return;}
+  db.config=data;
+  document.getElementById('sb_neg').textContent=db.config.nome_negocio;
+  toast('Configurações salvas.');
+}
+function novaForma(){crudForm('Forma de pagamento',[{k:'nome',label:'Nome',type:'text',required:true,full:true},{k:'taxa_percentual',label:'Taxa (%)',type:'number'}],{},async d=>{await insert('formas_pagamento',d);toast('Adicionada.');go('config');});}
+function editForma(id){crudForm('Editar forma',[{k:'nome',label:'Nome',type:'text',required:true,full:true},{k:'taxa_percentual',label:'Taxa (%)',type:'number'}],get('formas_pagamento',id),async d=>{await update('formas_pagamento',id,d);toast('Atualizada.');go('config');});}
+function novaCategoria(){crudForm('Nova categoria',[{k:'nome',label:'Nome',type:'text',required:true,full:true},{k:'tipo',label:'Tipo',type:'select',options:[{v:'despesa',l:'Despesa'},{v:'receita',l:'Receita'}],required:true}],{},async d=>{await insert('categorias',d);toast('Categoria criada.');go('config');});}
 function exportBackup(){const blob=new Blob([JSON.stringify(db,null,2)],{type:'application/json'});const u=URL.createObjectURL(blob);const a=document.createElement('a');a.href=u;a.download='atacadaopet_backup.json';a.click();URL.revokeObjectURL(u);toast('Backup baixado.');}
-function resetTudo(){confirmAction('Apagar TODOS os dados deste dispositivo? Não dá para desfazer.',()=>{localStorage.removeItem(KEY);db=load();toast('Dados apagados.');go('config');},true);}
 
 /* -------- MAIS (mobile) -------- */
 RENDER.mais=()=>{
@@ -881,40 +932,40 @@ RENDER.mais=()=>{
 /* -------- DEMO DATA -------- */
 function loadDemo(){
   const lojaId=requireLoja();if(!lojaId)return;
-  confirmAction('Carregar um conjunto de dados de exemplo nesta loja? Você pode apagar depois em Configurações.',()=>{
+  confirmAction('Carregar um conjunto de dados de exemplo nesta loja? Você pode apagar depois.',async()=>{
     const fpCred=all('formas_pagamento').find(f=>f.nome.includes('crédito'))?.id;
     const fpDin=all('formas_pagamento').find(f=>f.nome==='Dinheiro')?.id;
-    const P=(nome,catg,un,qt,cu,pv)=>insert('produtos',{loja_id:lojaId,nome,categoria:catg,unidade:un,quantidade_atual:qt,custo_unitario:cu,preco_venda:pv});
-    const racao=P('Ração Golden 15kg','racao','un',24,89,129.9);
-    const areia=P('Areia sanitária 4kg','higiene','un',40,9.5,17.9);
-    const petisco=P('Petisco Pedigree 500g','petisco','un',60,7.2,13.9);
-    P('Coleira ajustável M','acessorio','un',18,12,29.9);
-    P('Shampoo Pet Clean 500ml','higiene','un',30,8,19.9);
-    insert('fornecedores',{nome:'Distribuidora PetMax',produtos:'Ração e petiscos',prazo_pagamento:'30 dias',whatsapp:'(11) 90000-0000'});
-    insert('fornecedores',{nome:'Higiene Pet Ltda',produtos:'Areia e shampoo',prazo_pagamento:'21 dias'});
-    const cx=insert('caixas',{loja_id:lojaId,tipo:'diario',data_abertura:todayISO(),saldo_inicial:300,status:'aberto',usuario_abertura_id:user.id});
-    const venda=(prod,q,fp)=>{
+    const P=async(nome,catg,un,qt,cu,pv)=>insert('produtos',{loja_id:lojaId,nome,categoria:catg,unidade:un,quantidade_atual:qt,custo_unitario:cu,preco_venda:pv});
+    const racao=await P('Ração Golden 15kg','racao','un',24,89,129.9);
+    const areia=await P('Areia sanitária 4kg','higiene','un',40,9.5,17.9);
+    const petisco=await P('Petisco Pedigree 500g','petisco','un',60,7.2,13.9);
+    await P('Coleira ajustável M','acessorio','un',18,12,29.9);
+    await P('Shampoo Pet Clean 500ml','higiene','un',30,8,19.9);
+    await insert('fornecedores',{nome:'Distribuidora PetMax',produtos:'Ração e petiscos',prazo_pagamento:'30 dias',whatsapp:'(11) 90000-0000'});
+    await insert('fornecedores',{nome:'Higiene Pet Ltda',produtos:'Areia e shampoo',prazo_pagamento:'21 dias'});
+    const cx=await insert('caixas',{loja_id:lojaId,tipo:'diario',data_abertura:todayISO(),saldo_inicial:300,status:'aberto',usuario_abertura_id:user.id});
+    const venda=async(prod,q,fp)=>{
       const tot=prod.preco_venda*q;
-      const v=insert('vendas',{loja_id:lojaId,tipo:'individual',data:todayISO(),forma_pagamento_id:fp,valor_total:tot,status:'registrada',usuario_id:user.id});
-      insert('venda_itens',{venda_id:v.id,loja_id:lojaId,produto_id:prod.id,nome:prod.nome,quantidade:q,valor_unitario:prod.preco_venda,valor_total:tot});
-      update('produtos',prod.id,{quantidade_atual:(+prod.quantidade_atual)-q});
-      insert('mov_estoque',{loja_id:lojaId,produto_id:prod.id,tipo:'saida_venda',quantidade:-q,referencia_id:v.id,usuario_id:user.id});
-      if(fp===fpDin)insert('mov_caixa',{caixa_id:cx.id,loja_id:lojaId,tipo:'entrada',valor:tot,descricao:'Venda '+prod.nome});
+      const v=await insert('vendas',{loja_id:lojaId,tipo:'individual',data:todayISO(),forma_pagamento_id:fp,valor_total:tot,status:'registrada',usuario_id:user.id});
+      await insert('venda_itens',{venda_id:v.id,loja_id:lojaId,produto_id:prod.id,nome:prod.nome,quantidade:q,valor_unitario:prod.preco_venda,valor_total:tot});
+      await update('produtos',prod.id,{quantidade_atual:(+prod.quantidade_atual)-q});
+      await insert('mov_estoque',{loja_id:lojaId,produto_id:prod.id,tipo:'saida_venda',quantidade:-q,referencia_id:v.id,usuario_id:user.id});
+      if(fp===fpDin)await insert('mov_caixa',{caixa_id:cx.id,loja_id:lojaId,tipo:'entrada',valor:tot,descricao:'Venda '+prod.nome});
     };
-    venda(racao,2,fpCred);venda(petisco,5,fpDin);venda(areia,3,fpDin);
-    insert('despesas',{loja_id:lojaId,descricao:'Aluguel do ponto',tipo:'fixa',valor:3200,data_competencia:todayISO(),data_vencimento:todayISO(),status:'pendente',usuario_id:user.id});
-    insert('despesas',{loja_id:lojaId,descricao:'Energia elétrica',tipo:'fixa',valor:680,data_competencia:todayISO(),data_vencimento:todayISO(),status:'pendente',usuario_id:user.id});
-    insert('despesas',{loja_id:lojaId,descricao:'Pró-labore',tipo:'pro_labore',valor:3500,data_competencia:todayISO(),status:'pago',usuario_id:user.id});
-    insert('anotacoes',{loja_id:lojaId,titulo:'Confirmar pedido de ração',categoria:'Compras',prioridade:'Alta',status:'aberta',usuario_id:user.id});
+    await venda(racao,2,fpCred);await venda(petisco,5,fpDin);await venda(areia,3,fpDin);
+    await insert('despesas',{loja_id:lojaId,descricao:'Aluguel do ponto',tipo:'fixa',valor:3200,data_competencia:todayISO(),data_vencimento:todayISO(),status:'pendente',usuario_id:user.id});
+    await insert('despesas',{loja_id:lojaId,descricao:'Energia elétrica',tipo:'fixa',valor:680,data_competencia:todayISO(),data_vencimento:todayISO(),status:'pendente',usuario_id:user.id});
+    await insert('despesas',{loja_id:lojaId,descricao:'Pró-labore',tipo:'pro_labore',valor:3500,data_competencia:todayISO(),status:'pago',usuario_id:user.id});
+    await insert('anotacoes',{loja_id:lojaId,titulo:'Confirmar pedido de ração',categoria:'Compras',prioridade:'Alta',status:'aberta',usuario_id:user.id});
     toast('Dados de exemplo carregados.');go('inicio');
   });
 }
 
 /* ---------- BOOT ---------- */
-loginHint();
-db=load();
-const sid=localStorage.getItem(SESS);
-if(sid){const u=get('usuarios',sid);if(u&&u.ativo!==false){user=u;startApp();}}
+(async()=>{
+  const {data:{session}}=await sb.auth.getSession();
+  if(session)await afterAuth();
+})();
 document.addEventListener('keydown',e=>{if(e.key==='Enter'&&document.getElementById('login').style.display!=='none')doLogin();});
 </script>
 </body>
