@@ -698,14 +698,14 @@ async function atualizarVencidas(){
 }
 
 /* -------- ESTOQUE / PRODUTOS -------- */
-const CAT_PROD=[['racao','Ração'],['petisco','Petiscos'],['higiene','Higiene e limpeza'],['acessorio','Acessórios'],['farmacia','Farmácia e saúde'],['brinquedo','Brinquedos'],['outro','Outro']];
+const CAT_PROD=[['racao','Ração'],['petisco','Petiscos'],['higiene','Higiene e limpeza'],['acessorio','Acessórios'],['farmacia','Farmácia e saúde'],['brinquedo','Brinquedos'],['lanche','Lanches'],['outro','Outro']];
 RENDER.estoque=()=>{
   const w=canWrite('estoque');const singleLoja=!isMaster()||lojaFiltro!=='todas';
   const prods=scoped('produtos');
   const cols=singleLoja?`1fr 120px 110px 1fr 90px 80px ${w?'130px':''}`:`1fr 100px 120px 110px 1fr 90px 80px ${w?'130px':''}`;
   const rows=prods.length?prods.map(p=>{const baixo=(+p.quantidade_atual)<0;const m=margemProduto(p);
     return `<div class="row" style="grid-template-columns:${cols}">
-      <div class="t">${esc(p.nome)}</div>
+      <div class="t">${esc(p.nome)}${p.descricao?`<div class="s">${esc(p.descricao)}</div>`:''}</div>
       ${singleLoja?'':`<div class="s">${esc((get('lojas',p.loja_id)||{}).nome||'—')}</div>`}
       <div class="s">${(CAT_PROD.find(c=>c[0]===p.categoria)||['','—'])[1]}</div>
       <div class="s num">${NUM(p.quantidade_atual)} ${esc(p.unidade||'')}</div>
@@ -713,15 +713,46 @@ RENDER.estoque=()=>{
       <div style="text-align:right"><span class="pill-s ${baixo?'s-venc':'s-ok'}">${baixo?'Negativo':'OK'}</span></div>
       <div style="text-align:right"><span class="pill-s ${m<0?'s-neg':m<20?'s-pend':'s-ok'}">${PCT(m)}</span></div>
       ${w?`<div class="actions"><button onclick="editarProduto('${p.id}')">Editar</button><button onclick="ajusteEstoque('${p.id}')">Ajuste</button><button class="del" onclick="excluirProduto('${p.id}')">✕</button></div>`:''}</div>`;}).join(''):emptyState('Nenhum produto cadastrado.',w?`<button class="btn-add" onclick="novoProduto()">＋ Cadastrar produto</button>`:'');
-  return `${w?`<div class="toolbar"><button class="btn-add" onclick="novoProduto()">＋ Novo produto</button></div>`:''}
+  return `${w?`<div class="toolbar"><button class="btn-add" onclick="novoProduto()">＋ Novo produto</button><button class="btn-ghost" onclick="importarLanches()">Importar cardápio de lanches</button></div>`:''}
     <div class="list">${prods.length?`<div class="list-head" style="grid-template-columns:${cols}"><span>Produto</span>${singleLoja?'':'<span>Loja</span>'}<span>Categoria</span><span>Qtd atual</span><span style="text-align:right">Custo un.</span><span style="text-align:right">Status</span><span style="text-align:right">Margem</span>${w?'<span></span>':''}</div>`:''}${rows}</div>
     <p class="s" style="margin-top:12px">O custo e o preço de venda aqui definem a margem de cada produto e alimentam as vendas.</p>`;
 };
-function prodFields(){return[{k:'nome',label:'Nome',type:'text',required:true,full:true},{k:'categoria',label:'Categoria',type:'select',options:CAT_PROD.map(([v,l])=>({v,l})),required:true},{k:'unidade',label:'Unidade (un, kg, L...)',type:'text',value:'un'},{k:'quantidade_atual',label:'Qtd atual',type:'number',step:'0.001'},{k:'custo_unitario',label:'Custo unitário (R$)',type:'number',required:true},{k:'preco_venda',label:'Preço de venda (R$)',type:'number',required:true}];}
+function prodFields(){return[{k:'nome',label:'Nome',type:'text',required:true,full:true},{k:'descricao',label:'Descrição / Ingredientes',type:'textarea',full:true},{k:'categoria',label:'Categoria',type:'select',options:CAT_PROD.map(([v,l])=>({v,l})),required:true},{k:'unidade',label:'Unidade (un, kg, L...)',type:'text',value:'un'},{k:'quantidade_atual',label:'Qtd atual',type:'number',step:'0.001'},{k:'custo_unitario',label:'Custo unitário (R$)',type:'number',required:true},{k:'preco_venda',label:'Preço de venda (R$)',type:'number',required:true}];}
 function novoProduto(){const lojaId=requireLoja();if(!lojaId)return;crudForm('Novo produto',prodFields(),{},async d=>{await insert('produtos',{...d,loja_id:lojaId});toast('Produto cadastrado.');go('estoque');});}
 function editarProduto(id){crudForm('Editar produto',prodFields(),get('produtos',id),async d=>{await update('produtos',id,d);toast('Produto atualizado.');go('estoque');});}
 function ajusteEstoque(id){const p=get('produtos',id);crudForm('Ajuste de estoque',[{k:'quantidade',label:'Nova quantidade',type:'number',step:'0.001',value:p.quantidade_atual,required:true},{k:'motivo',label:'Motivo',type:'text',full:true}],{},async d=>{const diff=(+d.quantidade)-(+p.quantidade_atual);await update('produtos',id,{quantidade_atual:+d.quantidade});await insert('mov_estoque',{loja_id:p.loja_id,produto_id:id,tipo:'ajuste',quantidade:diff,observacao:d.motivo,usuario_id:user.id});toast('Estoque ajustado.');go('estoque');});}
 function excluirProduto(id){confirmAction('Inativar este produto?',async()=>{await softDelete('produtos',id);toast('Produto inativado.');go('estoque');},true);}
+const CARDAPIO_LANCHES=[
+  ['X-Salada',18.50,'Hambúrguer, queijo, alface, tomate, pão de hambúrguer e molhos.'],
+  ['X-Burguer',16.50,'Hambúrguer, queijo, no pão de hambúrguer e molhos.'],
+  ['X-Egg',19.50,'Hambúrguer, ovo, queijo, pão de hambúrguer e molhos.'],
+  ['X-Bacon',19.50,'Hambúrguer, bacon, queijo, pão de hambúrguer e molhos.'],
+  ['X-Mania',23.50,'Hambúrguer, queijo, ovo, bacon, pão de hambúrguer e molhos.'],
+  ['X-Tudo',34.90,'Hambúrguer, queijo, ovo, presunto, bacon, tomate, alface, pão de hambúrguer e molhos.'],
+  ['Big Burguer',22.90,'2 hambúrgueres, queijo, tomate, alface, pão de hambúrguer e molhos.'],
+  ['X-Egg Salada',22.90,'Hambúrguer, ovo, alface, tomate, pão de hambúrguer.'],
+  ['X-Bacon Salada',22.90,'Hambúrguer, bacon, alface, tomate, pão de hambúrguer e molhos.'],
+  ['Churrasco c/ Queijo',26.90,'Contra filé, queijo, pão francês.'],
+  ['Churrasco c/ Queijo e Ovo',31.90,'Contra filé, queijo, bacon, ovo, salada no pão francês.'],
+  ['X-Calabresa',19.90,'Calabresa, queijo, no pão francês.'],
+  ['X-Calabresa Salada',20.90,'Calabresa, queijo, alface, tomate, no pão francês.'],
+  ['X-Filé de Frango',21.50,'Filé de frango, queijo no pão francês.'],
+  ['X-Filé de Frango Salada',22.50,'Filé de frango, queijo, alface, tomate no pão francês.'],
+  ['Americano',19.90,'Queijo, presunto, ovo, tomate, no pão francês.'],
+  ['Misto Quente',15.50,'Queijo, presunto, no pão francês.'],
+  ['Salame c/ Queijo',21.50,'Salame, queijo, azeitona, no pão francês.'],
+  ['Bauru',18.50,'Queijo, presunto, tomate e orégano, no pão francês.'],
+  ['Queijo Quente',16.50,'Queijo, maionese, no pão francês.']
+];
+function importarLanches(){
+  const lojaId=requireLoja();if(!lojaId)return;
+  confirmAction(`Importar os ${CARDAPIO_LANCHES.length} itens do cardápio de lanches como produtos desta loja (categoria "Lanches")? O custo unitário fica em R$ 0,00 — ajuste depois em cada produto.`,async()=>{
+    for(const [nome,preco,descricao] of CARDAPIO_LANCHES){
+      await insert('produtos',{loja_id:lojaId,nome,descricao,categoria:'lanche',unidade:'un',quantidade_atual:0,custo_unitario:0,preco_venda:preco});
+    }
+    toast('Cardápio de lanches importado.');go('estoque');
+  });
+}
 
 /* -------- FORNECEDORES (compartilhado entre lojas) -------- */
 RENDER.fornecedores=()=>{

@@ -73,6 +73,7 @@ create table produtos (
   id uuid primary key default gen_random_uuid(),
   loja_id uuid not null references lojas(id),
   nome text not null,
+  descricao text,
   categoria text,
   unidade text,
   quantidade_atual numeric not null default 0,
@@ -344,3 +345,9 @@ insert into categorias (nome, tipo) values
 -- insert into usuarios (id, nome, email, perfil, loja_id)
 -- values ('COLE-O-UUID-AQUI', 'Administrador', 'email-que-voce-cadastrou@dominio.com', 'master', null);
 -- ============================================================
+
+-- ============================================================
+-- MIGRAÇÃO: coluna "descricao" em produtos (rode só se a tabela
+-- produtos já existir no seu banco, criada antes desta coluna).
+-- ============================================================
+-- alter table produtos add column if not exists descricao text;
